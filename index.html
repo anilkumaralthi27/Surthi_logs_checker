@@ -1,0 +1,1071 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Kanta Match — Transport Log Reconciliation</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<style>
+:root{
+  --ink:#1c1f1a;
+  --paper:#f6f4ec;
+  --paper-2:#ede9db;
+  --diesel:#2f4a3c;
+  --diesel-dark:#1f332a;
+  --rust:#b5502e;
+  --amber:#c98a2c;
+  --line:#d8d2bf;
+  --ok:#2f6b4f;
+  --bad:#b5502e;
+  --warn:#c98a2c;
+  --extra:#4a6fa5;
+  --mono: 'JetBrains Mono', 'Courier New', monospace;
+  --disp: 'Fraunces', Georgia, serif;
+  --body: 'Inter', -apple-system, sans-serif;
+}
+@font-face{font-family:'Fraunces';src:local('Georgia');}
+*{box-sizing:border-box;}
+html,body{margin:0;padding:0;background:var(--paper);color:var(--ink);font-family:var(--body);}
+body{
+  background-image:
+    repeating-linear-gradient(0deg, transparent, transparent 39px, rgba(47,74,60,0.045) 39px, rgba(47,74,60,0.045) 40px);
+  min-height:100vh;
+}
+.wrap{max-width:1120px;margin:0 auto;padding:0 24px 80px;}
+
+/* HEADER — ledger stamp */
+header{
+  padding:44px 24px 28px;
+  border-bottom:3px solid var(--ink);
+  margin-bottom:36px;
+  position:relative;
+}
+.eyebrow{
+  font-family:var(--mono);
+  font-size:11px;
+  letter-spacing:.18em;
+  text-transform:uppercase;
+  color:var(--diesel);
+  display:flex;
+  align-items:center;
+  gap:10px;
+  margin-bottom:10px;
+}
+.eyebrow .dot{width:6px;height:6px;border-radius:50%;background:var(--rust);display:inline-block;}
+h1{
+  font-family:var(--disp);
+  font-weight:600;
+  font-size:clamp(34px,5vw,54px);
+  letter-spacing:-0.01em;
+  margin:0 0 8px;
+  line-height:1.02;
+  color:var(--ink);
+}
+h1 em{font-style:italic;color:var(--diesel);}
+.tagline{
+  font-size:15px;
+  color:#555;
+  max-width:560px;
+  line-height:1.5;
+}
+.stampbox{
+  position:absolute;
+  right:24px; top:40px;
+  border:2px solid var(--rust);
+  color:var(--rust);
+  font-family:var(--mono);
+  font-size:10.5px;
+  letter-spacing:.12em;
+  text-transform:uppercase;
+  padding:7px 12px;
+  transform:rotate(4deg);
+  opacity:.85;
+  border-radius:2px;
+  display:none;
+}
+@media(min-width:720px){.stampbox{display:block;}}
+
+/* STEPS */
+.steps{
+  display:grid;
+  grid-template-columns:1fr 1fr;
+  gap:18px;
+  margin-bottom:22px;
+}
+@media(max-width:760px){.steps{grid-template-columns:1fr;}}
+.card{
+  background:var(--paper);
+  border:1.5px solid var(--ink);
+  border-radius:3px;
+  padding:22px;
+  position:relative;
+  transition:border-color .15s ease, box-shadow .15s ease;
+}
+.card.filled{border-color:var(--diesel); box-shadow:3px 3px 0 var(--diesel);}
+.stepnum{
+  font-family:var(--mono);
+  font-size:11px;
+  color:var(--diesel);
+  letter-spacing:.1em;
+  text-transform:uppercase;
+  margin-bottom:6px;
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+}
+.steptitle{font-family:var(--disp); font-size:20px; font-weight:600; margin-bottom:4px;}
+.stepdesc{font-size:13px; color:#666; margin-bottom:14px;}
+.dropzone{
+  border:1.5px dashed var(--line);
+  border-radius:3px;
+  padding:20px 14px;
+  text-align:center;
+  cursor:pointer;
+  background:var(--paper-2);
+  transition:all .15s ease;
+}
+.dropzone:hover{border-color:var(--diesel); background:#e6e2d1;}
+.dropzone.has-file{border-style:solid; border-color:var(--ok); background:#e8f0ea;}
+.dropzone input{display:none;}
+.dz-icon{font-size:22px; margin-bottom:6px;}
+.dz-label{font-size:13px; font-weight:600; color:var(--ink);}
+.dz-sub{font-size:11.5px; color:#888; margin-top:3px; font-family:var(--mono);}
+.filename{font-family:var(--mono); font-size:12px; color:var(--diesel-dark); word-break:break-all;}
+
+.compare-row{
+  display:flex; justify-content:center; margin:26px 0 30px;
+}
+.btn-compare{
+  font-family:var(--mono);
+  font-size:14px;
+  letter-spacing:.08em;
+  text-transform:uppercase;
+  background:var(--diesel);
+  color:var(--paper);
+  border:none;
+  padding:16px 44px;
+  border-radius:3px;
+  cursor:pointer;
+  box-shadow:4px 4px 0 var(--ink);
+  transition:transform .1s ease, box-shadow .1s ease;
+}
+.btn-compare:hover:not(:disabled){transform:translate(-2px,-2px); box-shadow:6px 6px 0 var(--ink);}
+.btn-compare:active:not(:disabled){transform:translate(1px,1px); box-shadow:2px 2px 0 var(--ink);}
+.btn-compare:disabled{opacity:.35; cursor:not-allowed; box-shadow:4px 4px 0 var(--line);}
+
+/* PROGRESS */
+.progress-wrap{display:none; margin:0 0 30px;}
+.progress-wrap.active{display:block;}
+.progress-label{font-family:var(--mono); font-size:12px; color:var(--diesel); margin-bottom:8px; text-align:center;}
+.progress-track{height:8px; background:var(--paper-2); border:1px solid var(--ink); border-radius:2px; overflow:hidden;}
+.progress-fill{height:100%; background:var(--diesel); width:0%; transition:width .3s ease;}
+
+/* RESULTS */
+#results{display:none;}
+#results.active{display:block;}
+.results-header{
+  display:flex; align-items:baseline; justify-content:space-between; gap:16px;
+  border-bottom:2px solid var(--ink); padding-bottom:14px; margin-bottom:24px;
+  flex-wrap:wrap;
+}
+.results-header h2{font-family:var(--disp); font-size:26px; margin:0; font-weight:600;}
+.results-sub{font-family:var(--mono); font-size:11.5px; color:#777;}
+
+.summary-grid{
+  display:grid; grid-template-columns:repeat(4,1fr); gap:1px;
+  background:var(--ink); border:1px solid var(--ink);
+  margin-bottom:28px;
+}
+@media(max-width:760px){.summary-grid{grid-template-columns:repeat(2,1fr);}}
+.sum-cell{background:var(--paper); padding:18px 16px;}
+.sum-cell .n{font-family:var(--disp); font-size:32px; font-weight:600; line-height:1;}
+.sum-cell .l{font-family:var(--mono); font-size:10.5px; text-transform:uppercase; letter-spacing:.06em; color:#777; margin-top:6px;}
+.sum-cell.ok .n{color:var(--ok);}
+.sum-cell.bad .n{color:var(--bad);}
+.sum-cell.warn .n{color:var(--warn);}
+.sum-cell.extra .n{color:var(--extra);}
+.sum-cell.neutral .n{color:var(--ink);}
+
+.status-pill{
+  display:inline-flex; align-items:center; gap:5px;
+  font-family:var(--mono); font-size:11px; font-weight:600;
+  padding:3px 9px; border-radius:20px; white-space:nowrap;
+}
+.status-pill.ok{background:#e3efe6; color:var(--ok);}
+.status-pill.bad{background:#f6e5dd; color:var(--bad);}
+.status-pill.warn{background:#f9edd9; color:#93670e;}
+.status-pill.missing{background:#f9edd9; color:#93670e;}
+.status-pill.extra{background:#e2eaf4; color:var(--extra);}
+.status-pill.manual{background:#eee; color:#666;}
+
+.table-wrap{
+  overflow-x:auto;
+  border:1.5px solid var(--ink);
+  border-radius:3px;
+  margin-bottom:36px;
+}
+table{width:100%; border-collapse:collapse; font-size:13px; min-width:900px;}
+thead th{
+  background:var(--diesel); color:var(--paper);
+  font-family:var(--mono); font-size:10.5px; text-transform:uppercase; letter-spacing:.05em;
+  padding:11px 12px; text-align:left; white-space:nowrap; font-weight:600;
+}
+tbody td{padding:10px 12px; border-top:1px solid var(--line); white-space:nowrap;}
+tbody tr:nth-child(even){background:rgba(47,74,60,0.03);}
+tbody tr:hover{background:rgba(47,74,60,0.07);}
+.num{text-align:right; font-family:var(--mono);}
+.diff-pos{color:var(--bad); font-weight:600;}
+.diff-zero{color:#999;}
+.veh{font-family:var(--mono); font-weight:600;}
+.veh-alt{font-weight:400; color:#888; font-size:11px;}
+
+.section-label{
+  font-family:var(--mono); font-size:11px; text-transform:uppercase; letter-spacing:.1em;
+  color:var(--diesel); margin:0 0 12px; display:flex; align-items:center; gap:10px;
+}
+.section-label::after{content:''; flex:1; height:1px; background:var(--line);}
+
+.actions{
+  display:flex; gap:14px; flex-wrap:wrap; margin:8px 0 40px;
+}
+.btn-dl{
+  font-family:var(--mono); font-size:13px; letter-spacing:.04em;
+  padding:13px 22px; border-radius:3px; cursor:pointer; border:1.5px solid var(--ink);
+  background:var(--paper); color:var(--ink); display:inline-flex; align-items:center; gap:8px;
+  transition:all .12s ease;
+}
+.btn-dl:hover{background:var(--ink); color:var(--paper);}
+.btn-dl.primary{background:var(--rust); border-color:var(--rust); color:#fff;}
+.btn-dl.primary:hover{background:#943e21;}
+
+.mini-note{font-size:12px; color:#888; margin-top:-4px; margin-bottom:30px; line-height:1.5;}
+
+footer{
+  margin-top:60px; padding-top:20px; border-top:1px solid var(--line);
+  font-family:var(--mono); font-size:11px; color:#999; text-align:center;
+}
+.err-banner{
+  display:none; background:#f6e5dd; border:1.5px solid var(--rust); color:#7a2e15;
+  padding:14px 18px; border-radius:3px; font-size:13px; margin-bottom:24px;
+}
+.err-banner.active{display:block;}
+
+.spinner{
+  display:inline-block; width:14px; height:14px; border:2px solid rgba(255,255,255,.35);
+  border-top-color:#fff; border-radius:50%; animation:spin .7s linear infinite; margin-right:8px; vertical-align:-2px;
+}
+@keyframes spin{to{transform:rotate(360deg);}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <div class="eyebrow"><span class="dot"></span>KANTA MATCH — LOG RECONCILIATION</div>
+    <h1>Two logs.<br><em>One truth.</em></h1>
+    <p class="tagline">Upload your load register and the company's copy. Weights convert between tonnes and kilograms, rates between ₹/T and ₹/KG, and every load is matched by date, vehicle and weight — not by row number.</p>
+    <div class="stampbox">VERIFIED ✕ MATCHED</div>
+  </header>
+
+  <div class="err-banner" id="errBanner"></div>
+
+  <div class="steps">
+    <div class="card" id="cardA">
+      <div class="stepnum"><span>Step 1</span><span id="tickA"></span></div>
+      <div class="steptitle">My Log</div>
+      <div class="stepdesc">Your own transport / load record, as a PDF.</div>
+      <label class="dropzone" id="dzA" for="fileA">
+        <div class="dz-icon">📋</div>
+        <div class="dz-label">Drop or choose PDF</div>
+        <div class="dz-sub" id="dzA-sub">.pdf only</div>
+        <input type="file" id="fileA" accept="application/pdf">
+      </label>
+    </div>
+    <div class="card" id="cardB">
+      <div class="stepnum"><span>Step 2</span><span id="tickB"></span></div>
+      <div class="steptitle">Company Log</div>
+      <div class="stepdesc">The company's record for the same loads.</div>
+      <label class="dropzone" id="dzB" for="fileB">
+        <div class="dz-icon">🏢</div>
+        <div class="dz-label">Drop or choose PDF</div>
+        <div class="dz-sub" id="dzB-sub">.pdf only</div>
+        <input type="file" id="fileB" accept="application/pdf">
+      </label>
+    </div>
+  </div>
+
+  <div class="compare-row">
+    <button class="btn-compare" id="btnCompare" disabled>Step 3 — Compare Logs</button>
+  </div>
+
+  <div class="progress-wrap" id="progWrap">
+    <div class="progress-label" id="progLabel">Reading PDFs…</div>
+    <div class="progress-track"><div class="progress-fill" id="progFill"></div></div>
+  </div>
+
+  <div id="results">
+    <div class="results-header">
+      <h2>Comparison Completed</h2>
+      <div class="results-sub" id="resultsFiles"></div>
+    </div>
+
+    <div class="summary-grid" id="summaryGrid"></div>
+
+    <div class="actions">
+      <button class="btn-dl primary" id="btnPdf">📄 Download PDF Report</button>
+      <button class="btn-dl" id="btnXlsx">📊 Download Excel Report</button>
+    </div>
+
+    <p class="section-label">Detailed Comparison</p>
+    <div class="table-wrap">
+      <table id="detailTable">
+        <thead>
+          <tr>
+            <th>Date</th><th>Vehicle</th>
+            <th>My Weight</th><th>Co. Weight</th><th>Wt. Diff</th>
+            <th>My Rate</th><th>Co. Rate</th><th>Rate Diff</th>
+            <th>My Amt</th><th>Co. Amt</th><th>Amt Diff</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody id="detailBody"></tbody>
+      </table>
+    </div>
+    <p class="mini-note">Weights and rates are normalized to Tonnes and ₹/Tonne for display. Original PDF values are preserved internally and used in the downloadable reports.</p>
+  </div>
+
+  <footer>KANTA MATCH · CLIENT-SIDE PDF RECONCILIATION · NO DATA LEAVES YOUR BROWSER</footer>
+</div>
+
+<script>
+pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
+/* ============================================================
+   STATE
+   ============================================================ */
+let fileAData = null, fileBData = null;
+let fileAName = '', fileBName = '';
+let lastResult = null;
+
+/* ============================================================
+   FILE INPUT HANDLING
+   ============================================================ */
+function setupDropzone(inputId, dzId, subId, onLoaded){
+  const input = document.getElementById(inputId);
+  const dz = document.getElementById(dzId);
+  const sub = document.getElementById(subId);
+
+  input.addEventListener('change', () => {
+    if(input.files && input.files[0]){
+      handleFile(input.files[0]);
+    }
+  });
+  ['dragover','dragenter'].forEach(ev=>{
+    dz.addEventListener(ev, e=>{ e.preventDefault(); dz.style.borderColor='var(--diesel)'; });
+  });
+  ['dragleave','drop'].forEach(ev=>{
+    dz.addEventListener(ev, e=>{ e.preventDefault(); });
+  });
+  dz.addEventListener('drop', e=>{
+    e.preventDefault();
+    const f = e.dataTransfer.files[0];
+    if(f && f.type === 'application/pdf'){ handleFile(f); }
+  });
+
+  function handleFile(f){
+    if(f.type !== 'application/pdf'){
+      showError('Please upload a PDF file.');
+      return;
+    }
+    sub.textContent = f.name;
+    dz.classList.add('has-file');
+    onLoaded(f);
+  }
+}
+
+setupDropzone('fileA','dzA','dzA-sub', f=>{
+  fileAName = f.name;
+  document.getElementById('cardA').classList.add('filled');
+  document.getElementById('tickA').textContent = '✓';
+  const reader = new FileReader();
+  reader.onload = e => { fileAData = new Uint8Array(e.target.result); checkReady(); };
+  reader.readAsArrayBuffer(f);
+});
+setupDropzone('fileB','dzB','dzB-sub', f=>{
+  fileBName = f.name;
+  document.getElementById('cardB').classList.add('filled');
+  document.getElementById('tickB').textContent = '✓';
+  const reader = new FileReader();
+  reader.onload = e => { fileBData = new Uint8Array(e.target.result); checkReady(); };
+  reader.readAsArrayBuffer(f);
+});
+
+function checkReady(){
+  document.getElementById('btnCompare').disabled = !(fileAData && fileBData);
+}
+
+function showError(msg){
+  const b = document.getElementById('errBanner');
+  b.textContent = '⚠ ' + msg;
+  b.classList.add('active');
+  setTimeout(()=>b.classList.remove('active'), 7000);
+}
+
+/* ============================================================
+   PDF TEXT EXTRACTION
+   ============================================================ */
+async function extractPdfText(data){
+  const pdf = await pdfjsLib.getDocument({data}).promise;
+  let fullText = '';
+  const lineRecords = []; // per-line with y position for table reconstruction
+  for(let p=1; p<=pdf.numPages; p++){
+    const page = await pdf.getPage(p);
+    const content = await page.getTextContent();
+    // group items by approximate y (row) to reconstruct rows
+    const rows = {};
+    content.items.forEach(item=>{
+      const y = Math.round(item.transform[5]);
+      if(!rows[y]) rows[y] = [];
+      rows[y].push({x: item.transform[4], str: item.str});
+    });
+    const ys = Object.keys(rows).map(Number).sort((a,b)=>b-a);
+    ys.forEach(y=>{
+      const row = rows[y].sort((a,b)=>a.x-b.x);
+      const line = row.map(r=>r.str).join(' ').replace(/\s+/g,' ').trim();
+      if(line) { fullText += line + '\n'; lineRecords.push(line); }
+    });
+  }
+  return {fullText, lines: lineRecords};
+}
+
+/* ============================================================
+   PARSING LOGIC
+   Extract candidate records from raw text using regex patterns
+   for date, vehicle number, weight (T/KG), rate (per T / per KG),
+   and amount (₹).
+   ============================================================ */
+
+const MONTHS = {jan:1,feb:2,mar:3,apr:4,may:5,jun:6,jul:7,aug:8,sep:9,sept:9,oct:10,nov:11,dec:12};
+
+function parseDate(str){
+  // Try DD-Mon-YYYY / DD Mon YYYY / DD/MM/YYYY / DD-MM-YYYY / YYYY-MM-DD
+  str = str.trim();
+  let m;
+  if((m = str.match(/(\d{1,2})[-\/\s]([A-Za-z]{3,9})[-\/\s](\d{2,4})/))){
+    const mon = MONTHS[m[2].toLowerCase().slice(0,3) === 'sep' && m[2].toLowerCase().startsWith('sept') ? 'sept' : m[2].toLowerCase().slice(0,3)];
+    if(mon){
+      let yr = parseInt(m[3]);
+      if(yr < 100) yr += 2000;
+      return normDate(parseInt(m[1]), mon, yr);
+    }
+  }
+  if((m = str.match(/(\d{4})-(\d{1,2})-(\d{1,2})/))){
+    return normDate(parseInt(m[3]), parseInt(m[2]), parseInt(m[1]));
+  }
+  if((m = str.match(/(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})/))){
+    let yr = parseInt(m[3]); if(yr<100) yr+=2000;
+    // assume DD/MM/YYYY (Indian convention)
+    return normDate(parseInt(m[1]), parseInt(m[2]), yr);
+  }
+  return null;
+}
+function normDate(d,m,y){
+  if(!d||!m||!y||m<1||m>12||d<1||d>31) return null;
+  const dd = String(d).padStart(2,'0');
+  const monNames = ['','Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  return {iso: `${y}-${String(m).padStart(2,'0')}-${dd}`, display: `${dd}-${monNames[m]}-${y}`};
+}
+
+function extractVehicle(line){
+  // Full format: AP07TB6819 style, or state code + digits
+  let m = line.match(/\b([A-Z]{2}\s?-?\s?\d{1,2}\s?-?\s?[A-Z]{1,3}\s?-?\s?\d{3,4})\b/);
+  if(m) return m[1].replace(/[\s-]/g,'').toUpperCase();
+
+  // Fallback: a standalone 3-4 digit token that is NOT part of a date, weight, rate, or amount phrase.
+  // Strip out substrings that are clearly dates, weights, rates, and amounts first, then look
+  // for a leftover bare number of 3-4 digits.
+  let stripped = line
+    .replace(/\d{1,2}[-\/\s][A-Za-z]{3,9}[-\/\s]\d{2,4}/g, ' ')   // dates like 16-Aug-2026
+    .replace(/\d{4}-\d{1,2}-\d{1,2}/g, ' ')                        // ISO dates
+    .replace(/\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}/g, ' ')            // numeric dates
+    .replace(/\d[\d,]*\.?\d*\s*(?:T(?:ON)?S?|KG)\b/gi, ' ')        // weights
+    .replace(/(?:₹|Rs\.?|INR)?\s*\d[\d,]*\.?\d*\s*(?:\/|per)\s*(?:T(?:ON)?S?|KG)\b/gi, ' ') // rates
+    .replace(/(?:Amount|Total|Amt)\D{0,6}(?:₹|Rs\.?|INR)?\s*\d[\d,]*\.?\d{0,2}/gi, ' ')     // amounts
+    .replace(/(?:₹|Rs\.?|INR)\s*\d[\d,]*\.?\d{0,2}/g, ' ');        // any remaining currency figure
+
+  m = stripped.match(/\b(\d{3,4})\b/);
+  if(m) return m[1];
+  return null;
+}
+function vehicleTail(vehStr, len){
+  // last `len` digits of a vehicle number, used for cross-format matching
+  const digits = vehStr.replace(/\D/g,'');
+  return digits.slice(-len);
+}
+
+function extractWeight(line){
+  // matches "10.03 T" "10.03T" "10030 KG" "10,030 Kg" "10030KG"
+  let m = line.match(/(\d[\d,]*\.?\d*)\s*(T(?:ON)?S?)\b(?!\w)/i);
+  if(m && !/KG/i.test(m[0])){
+    const val = parseFloat(m[1].replace(/,/g,''));
+    if(val > 0 && val < 100) return {value: val, unit:'T', raw: m[0].trim()};
+  }
+  m = line.match(/(\d[\d,]*\.?\d*)\s*KG\b/i);
+  if(m){
+    const val = parseFloat(m[1].replace(/,/g,''));
+    if(val > 50) return {value: val, unit:'KG', raw: m[0].trim()};
+  }
+  return null;
+}
+
+function extractRate(line){
+  // "₹2,300/T" "Rs.2300 per T" "₹2.3/KG" "2300/T" "rate: 2300"
+  let m = line.match(/(?:₹|Rs\.?|INR)?\s*(\d[\d,]*\.?\d*)\s*(?:\/|per)\s*(T(?:ON)?S?|KG)\b/i);
+  if(m){
+    const val = parseFloat(m[1].replace(/,/g,''));
+    const unit = /KG/i.test(m[2]) ? 'KG' : 'T';
+    return {value: val, unit, raw: m[0].trim()};
+  }
+  return null;
+}
+
+function extractAmount(line){
+  // total amount - look for larger currency figures, typically labeled Amount/Total
+  let m = line.match(/(?:Amount|Total|Amt)\D{0,6}(?:₹|Rs\.?|INR)?\s*(\d[\d,]*\.?\d{0,2})/i);
+  if(m){
+    return parseFloat(m[1].replace(/,/g,''));
+  }
+  return null;
+}
+
+function extractInvoice(line){
+  let m = line.match(/\b(?:INV|Invoice|Kanta|Slip|Trip)[\s#:.-]*([A-Za-z0-9\/-]{3,})/i);
+  return m ? m[1] : null;
+}
+
+/**
+ * Parse a full text block into structured "load" records.
+ * Strategy: scan line by line, accumulate fields until a date+vehicle
+ * combo (or enough fields) close out a record, since PDFs may spread
+ * one load's fields across a table row split into multiple text lines,
+ * or condense a whole load onto a single line.
+ */
+function parseRecords(lines){
+  const records = [];
+  let buffer = {date:null, vehicle:null, weight:null, rate:null, amount:null, invoice:null, rawLines:[]};
+
+  function flush(){
+    if(buffer.date || buffer.vehicle || buffer.weight){
+      records.push(buffer);
+    }
+    buffer = {date:null, vehicle:null, weight:null, rate:null, amount:null, invoice:null, rawLines:[]};
+  }
+
+  // First pass: try single-line-per-record (common in tabular PDFs)
+  let singleLineHits = 0;
+  lines.forEach(line=>{
+    const d = parseDate(line), v = extractVehicle(line), w = extractWeight(line);
+    if(d && v && w) singleLineHits++;
+  });
+
+  if(singleLineHits >= Math.max(1, Math.floor(lines.length*0.15))){
+    // table-row-per-line mode
+    lines.forEach(line=>{
+      const d = parseDate(line);
+      const v = extractVehicle(line);
+      const w = extractWeight(line);
+      if(d && (v || w)){
+        const r = extractRate(line);
+        const a = extractAmount(line) || (function(){
+          // grab last big currency-looking number on the line as fallback amount
+          const all = [...line.matchAll(/(?:₹|Rs\.?)\s*(\d[\d,]*\.?\d{0,2})/gi)];
+          if(all.length){ return parseFloat(all[all.length-1][1].replace(/,/g,'')); }
+          return null;
+        })();
+        const inv = extractInvoice(line);
+        records.push({date:d, vehicle:v, weight:w, rate:r, amount:a, invoice:inv, rawLines:[line]});
+      }
+    });
+    return records;
+  }
+
+  // Fallback: multi-line accumulation mode
+  lines.forEach(line=>{
+    const d = parseDate(line);
+    const v = extractVehicle(line);
+    const w = extractWeight(line);
+    const r = extractRate(line);
+    const a = extractAmount(line);
+    const inv = extractInvoice(line);
+
+    const startsNew = d && buffer.date && d.iso !== buffer.date.iso;
+    const vehicleConflict = v && buffer.vehicle && v !== buffer.vehicle && buffer.weight;
+
+    if(startsNew || vehicleConflict){
+      flush();
+    }
+    if(d && !buffer.date) buffer.date = d;
+    if(v && !buffer.vehicle) buffer.vehicle = v;
+    if(w && !buffer.weight) buffer.weight = w;
+    if(r && !buffer.rate) buffer.rate = r;
+    if(a && !buffer.amount) buffer.amount = a;
+    if(inv && !buffer.invoice) buffer.invoice = inv;
+    buffer.rawLines.push(line);
+
+    // if a record looks complete (date+vehicle+weight+rate), flush eagerly
+    if(buffer.date && buffer.vehicle && buffer.weight && buffer.rate){
+      flush();
+    }
+  });
+  flush();
+  return records.filter(r=>r.date || r.vehicle || r.weight);
+}
+
+/* ============================================================
+   NORMALIZATION
+   ============================================================ */
+function normWeightT(w){
+  if(!w) return null;
+  return w.unit === 'KG' ? w.value/1000 : w.value;
+}
+function normRatePerT(r){
+  if(!r) return null;
+  return r.unit === 'KG' ? r.value*1000 : r.value;
+}
+
+/* ============================================================
+   MATCHING
+   Match records from log A to log B using: date -> vehicle tail -> weight proximity -> invoice
+   ============================================================ */
+function matchRecords(listA, listB){
+  const usedB = new Set();
+  const matched = [];
+  const missing = []; // in A, not in B
+  const extra = [];   // in B, not in A
+
+  function score(a,b){
+    let s = 0;
+    if(a.date && b.date && a.date.iso === b.date.iso) s += 40;
+    else if(a.date && b.date) return -1; // date mismatch disqualifies unless one is missing
+
+    if(a.vehicle && b.vehicle){
+      const digitsA = a.vehicle.replace(/\D/g,''), digitsB = b.vehicle.replace(/\D/g,'');
+      const tailLen = Math.min(digitsA.length, digitsB.length, 4);
+      const ta = vehicleTail(a.vehicle, tailLen), tb = vehicleTail(b.vehicle, tailLen);
+      if(a.vehicle === b.vehicle) s += 35;
+      else if(tailLen >= 3 && ta && tb && ta === tb) s += 30;
+      else return -1;
+    }
+    const wa = normWeightT(a.weight), wb = normWeightT(b.weight);
+    if(wa!=null && wb!=null){
+      const diff = Math.abs(wa-wb);
+      if(diff < 0.02) s += 20;
+      else if(diff < 0.3) s += 10;
+      else s -= 5; // still allow but lower score — could be genuine diff
+    }
+    if(a.invoice && b.invoice){
+      if(a.invoice.toLowerCase() === b.invoice.toLowerCase()) s += 15;
+    }
+    return s;
+  }
+
+  listA.forEach(a=>{
+    let bestIdx = -1, bestScore = -1;
+    listB.forEach((b,i)=>{
+      if(usedB.has(i)) return;
+      const s = score(a,b);
+      if(s > bestScore){ bestScore = s; bestIdx = i; }
+    });
+    if(bestIdx >= 0 && bestScore >= 40){
+      usedB.add(bestIdx);
+      matched.push({a, b: listB[bestIdx], confidence: bestScore >= 60 ? 'high' : 'low'});
+    } else if(bestIdx >= 0 && bestScore >= 15){
+      // weak candidate — needs manual verification, still pair them
+      usedB.add(bestIdx);
+      matched.push({a, b: listB[bestIdx], confidence: 'manual'});
+    } else {
+      missing.push(a);
+    }
+  });
+  listB.forEach((b,i)=>{
+    if(!usedB.has(i)) extra.push(b);
+  });
+
+  return {matched, missing, extra};
+}
+
+/* ============================================================
+   VEHICLE DISPLAY — always show the full-format plate, and if
+   the two logs used different formats for the same vehicle
+   (e.g. "6819" vs "AP07TB6819"), show both so the mapping is
+   never ambiguous.
+   ============================================================ */
+function vehicleDisplay(vA, vB){
+  if(vA && vB){
+    if(vA === vB) return {html: vA, text: vA};
+    const full = vA.length >= vB.length ? vA : vB;
+    const short = vA.length >= vB.length ? vB : vA;
+    return {html: `${full} <span class="veh-alt">(${short})</span>`, text: `${full} (${short})`};
+  }
+  const v = vA || vB || '—';
+  return {html: v, text: v};
+}
+
+/* ============================================================
+   COMPARISON BUILD
+   ============================================================ */
+function buildComparison(matched, missing, extra){
+  const rows = [];
+  let weightDiffs=0, rateDiffs=0, amountDiffs=0;
+
+  matched.forEach(({a,b,confidence})=>{
+    const wa = normWeightT(a.weight), wb = normWeightT(b.weight);
+    const ra = normRatePerT(a.rate), rb = normRatePerT(b.rate);
+    const wtDiff = (wa!=null && wb!=null) ? Math.abs(wa-wb) : null;
+    const rtDiff = (ra!=null && rb!=null) ? Math.abs(ra-rb) : null;
+
+    const expectedA = (wa!=null && ra!=null) ? wa*ra : null;
+    const myAmt = a.amount != null ? a.amount : (expectedA!=null ? Math.round(expectedA) : null);
+    const expectedB = (wb!=null && rb!=null) ? wb*rb : null;
+    const coAmt = b.amount != null ? b.amount : (expectedB!=null ? Math.round(expectedB) : null);
+    const amtDiff = (myAmt!=null && coAmt!=null) ? Math.abs(myAmt-coAmt) : null;
+
+    let status = 'ok';
+    if(confidence === 'manual') status = 'manual';
+    else if((wtDiff!=null && wtDiff > 0.02) || (rtDiff!=null && rtDiff > 1) || (amtDiff!=null && amtDiff > 5)){
+      status = 'bad';
+    }
+    if(wtDiff!=null && wtDiff > 0.02) weightDiffs++;
+    if(rtDiff!=null && rtDiff > 1) rateDiffs++;
+    if(amtDiff!=null && amtDiff > 5) amountDiffs++;
+
+    const vd = vehicleDisplay(a.vehicle, b.vehicle);
+    rows.push({
+      date: a.date ? a.date.display : (b.date ? b.date.display : '—'),
+      vehicleHtml: vd.html, vehicleText: vd.text,
+      myWeight: wa, coWeight: wb, wtDiff,
+      myRate: ra, coRate: rb, rtDiff,
+      myAmt, coAmt, amtDiff,
+      status
+    });
+  });
+
+  missing.forEach(a=>{
+    rows.push({
+      date: a.date ? a.date.display : '—', vehicleHtml: a.vehicle || '—', vehicleText: a.vehicle || '—',
+      myWeight: normWeightT(a.weight), coWeight: null, wtDiff: null,
+      myRate: normRatePerT(a.rate), coRate: null, rtDiff: null,
+      myAmt: a.amount, coAmt: null, amtDiff: null,
+      status: 'missing'
+    });
+  });
+  extra.forEach(b=>{
+    rows.push({
+      date: b.date ? b.date.display : '—', vehicleHtml: b.vehicle || '—', vehicleText: b.vehicle || '—',
+      myWeight: null, coWeight: normWeightT(b.weight), wtDiff: null,
+      myRate: null, coRate: normRatePerT(b.rate), rtDiff: null,
+      myAmt: null, coAmt: b.amount, amtDiff: null,
+      status: 'extra'
+    });
+  });
+
+  // sort by date
+  rows.sort((x,y)=> (x.date||'').localeCompare(y.date||''));
+
+  return {rows, weightDiffs, rateDiffs, amountDiffs};
+}
+
+/* ============================================================
+   MAIN COMPARE FLOW
+   ============================================================ */
+document.getElementById('btnCompare').addEventListener('click', async ()=>{
+  const btn = document.getElementById('btnCompare');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span>Comparing…';
+  document.getElementById('progWrap').classList.add('active');
+  document.getElementById('results').classList.remove('active');
+  setProgress(5, 'Reading My Log PDF…');
+
+  try{
+    const textA = await extractPdfText(fileAData);
+    setProgress(30, 'Reading Company Log PDF…');
+    const textB = await extractPdfText(fileBData);
+    setProgress(55, 'Parsing records…');
+
+    const recA = parseRecords(textA.lines);
+    const recB = parseRecords(textB.lines);
+
+    if(recA.length === 0 || recB.length === 0){
+      throw new Error('Could not find any load records in one of the PDFs. Please check the file content.');
+    }
+
+    setProgress(75, 'Matching loads…');
+    const {matched, missing, extra} = matchRecords(recA, recB);
+
+    setProgress(90, 'Building report…');
+    const comp = buildComparison(matched, missing, extra);
+
+    lastResult = {
+      fileAName, fileBName,
+      totalA: recA.length, totalB: recB.length,
+      matchedCount: matched.filter(m=>m.confidence!=='manual').length,
+      manualCount: matched.filter(m=>m.confidence==='manual').length,
+      missingCount: missing.length,
+      extraCount: extra.length,
+      ...comp
+    };
+
+    setProgress(100, 'Done');
+    setTimeout(()=>{
+      document.getElementById('progWrap').classList.remove('active');
+      renderResults(lastResult);
+    }, 300);
+
+  } catch(err){
+    console.error(err);
+    showError(err.message || 'Something went wrong while comparing the PDFs.');
+    document.getElementById('progWrap').classList.remove('active');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Step 3 — Compare Logs';
+  }
+});
+
+function setProgress(pct, label){
+  document.getElementById('progFill').style.width = pct+'%';
+  document.getElementById('progLabel').textContent = label;
+}
+
+/* ============================================================
+   RENDER RESULTS
+   ============================================================ */
+function fmtT(v){ return v==null ? '—' : v.toFixed(2)+' T'; }
+function fmtRate(v){ return v==null ? '—' : '₹'+v.toLocaleString('en-IN',{maximumFractionDigits:2})+'/T'; }
+function fmtAmt(v){ return v==null ? '—' : '₹'+Math.round(v).toLocaleString('en-IN'); }
+
+function statusPill(status){
+  const map = {
+    ok: ['ok','✅ Same'],
+    bad: ['bad','🔴 Difference'],
+    missing: ['missing','⚠️ Missing in Company'],
+    extra: ['extra','➕ Extra in Company'],
+    manual: ['manual','⚠️ Needs Verification']
+  };
+  const [cls,label] = map[status] || ['manual','—'];
+  return `<span class="status-pill ${cls}">${label}</span>`;
+}
+
+function renderResults(r){
+  document.getElementById('results').classList.add('active');
+  document.getElementById('resultsFiles').textContent = `${r.fileAName}  ⇄  ${r.fileBName}`;
+
+  const cells = [
+    {n:r.totalA, l:'My Log Loads', cls:'neutral'},
+    {n:r.totalB, l:'Company Log Loads', cls:'neutral'},
+    {n:r.matchedCount, l:'Matched · Same', cls:'ok'},
+    {n:r.missingCount, l:'Missing in Company', cls:'warn'},
+    {n:r.extraCount, l:'Extra in Company', cls:'extra'},
+    {n:r.weightDiffs, l:'Weight Differences', cls: r.weightDiffs? 'bad':'neutral'},
+    {n:r.rateDiffs, l:'Rate Differences', cls: r.rateDiffs? 'bad':'neutral'},
+    {n:r.amountDiffs, l:'Amount Differences', cls: r.amountDiffs? 'bad':'neutral'},
+  ];
+  document.getElementById('summaryGrid').innerHTML = cells.map(c=>`
+    <div class="sum-cell ${c.cls}"><div class="n">${c.n}</div><div class="l">${c.l}</div></div>
+  `).join('');
+
+  const body = document.getElementById('detailBody');
+  body.innerHTML = r.rows.map(row=>{
+    const wtDiffCell = row.wtDiff==null ? '—' : (row.wtDiff>0.02 ? `<span class="diff-pos">${row.wtDiff.toFixed(2)} T</span>` : `<span class="diff-zero">0</span>`);
+    const rtDiffCell = row.rtDiff==null ? '—' : (row.rtDiff>1 ? `<span class="diff-pos">₹${row.rtDiff.toFixed(0)}/T</span>` : `<span class="diff-zero">₹0</span>`);
+    const amtDiffCell = row.amtDiff==null ? '—' : (row.amtDiff>5 ? `<span class="diff-pos">₹${Math.round(row.amtDiff).toLocaleString('en-IN')}</span>` : `<span class="diff-zero">₹0</span>`);
+    return `<tr>
+      <td>${row.date}</td>
+      <td class="veh">${row.vehicleHtml}</td>
+      <td class="num">${fmtT(row.myWeight)}</td>
+      <td class="num">${fmtT(row.coWeight)}</td>
+      <td class="num">${wtDiffCell}</td>
+      <td class="num">${fmtRate(row.myRate)}</td>
+      <td class="num">${fmtRate(row.coRate)}</td>
+      <td class="num">${rtDiffCell}</td>
+      <td class="num">${fmtAmt(row.myAmt)}</td>
+      <td class="num">${fmtAmt(row.coAmt)}</td>
+      <td class="num">${amtDiffCell}</td>
+      <td>${statusPill(row.status)}</td>
+    </tr>`;
+  }).join('');
+
+  document.getElementById('results').scrollIntoView({behavior:'smooth', block:'start'});
+}
+
+/* ============================================================
+   PDF REPORT
+   ============================================================ */
+document.getElementById('btnPdf').addEventListener('click', ()=>{
+  if(!lastResult) return;
+  const {jsPDF} = window.jspdf;
+  const doc = new jsPDF({unit:'pt', format:'a4'});
+  const pageW = doc.internal.pageSize.getWidth();
+  const margin = 40;
+  const inkColor = [28,31,26];
+  const dieselColor = [47,74,60];
+  const rustColor = [181,80,46];
+
+  // Page 1 — Summary
+  doc.setFont('helvetica','bold');
+  doc.setFontSize(20);
+  doc.setTextColor(...inkColor);
+  doc.text('TRANSPORT LOG COMPARISON REPORT', margin, 60);
+  doc.setDrawColor(...inkColor);
+  doc.setLineWidth(1.5);
+  doc.line(margin, 70, pageW-margin, 70);
+
+  doc.setFont('helvetica','normal');
+  doc.setFontSize(11);
+  doc.setTextColor(60,60,60);
+  doc.text(`My Log:       ${lastResult.fileAName}`, margin, 95);
+  doc.text(`Company Log:  ${lastResult.fileBName}`, margin, 112);
+  doc.text(`Generated:    ${new Date().toLocaleString('en-IN')}`, margin, 129);
+
+  doc.setFont('helvetica','bold');
+  doc.setFontSize(13);
+  doc.setTextColor(...dieselColor);
+  doc.text('SUMMARY', margin, 160);
+
+  const summaryRows = [
+    ['Total loads in My Log', String(lastResult.totalA)],
+    ['Total loads in Company Log', String(lastResult.totalB)],
+    ['Matched loads (Same)', '✅ ' + lastResult.matchedCount],
+    ['Missing in Company Log', '⚠️ ' + lastResult.missingCount],
+    ['Extra in Company Log', '➕ ' + lastResult.extraCount],
+    ['Needs Manual Verification', '⚠️ ' + lastResult.manualCount],
+    ['Weight Differences', (lastResult.weightDiffs? '🔴 ':'✅ ') + lastResult.weightDiffs],
+    ['Rate Differences', (lastResult.rateDiffs? '🔴 ':'✅ ') + lastResult.rateDiffs],
+    ['Amount Differences', (lastResult.amountDiffs? '🔴 ':'✅ ') + lastResult.amountDiffs],
+  ];
+
+  doc.autoTable({
+    startY: 172,
+    margin:{left:margin, right:margin},
+    body: summaryRows,
+    theme:'plain',
+    styles:{fontSize:11, cellPadding:{top:6,bottom:6,left:0,right:8}, textColor:inkColor},
+    columnStyles:{0:{fontStyle:'normal', cellWidth:280}, 1:{fontStyle:'bold', halign:'left'}},
+    didParseCell: (data)=>{
+      if(data.row.index < summaryRows.length){
+        data.cell.styles.lineWidth = {top:0,left:0,right:0,bottom:0.5};
+        data.cell.styles.lineColor = [216,210,191];
+      }
+    }
+  });
+
+  let y = doc.lastAutoTable.finalY + 30;
+  doc.setFont('helvetica','italic');
+  doc.setFontSize(9.5);
+  doc.setTextColor(120,120,120);
+  doc.text('Weights normalized to Tonnes (1 T = 1000 KG). Rates normalized to ₹ per Tonne.', margin, y);
+  doc.text('Values shown as "Same" differ by less than the rounding tolerance and are not flagged.', margin, y+13);
+
+  // Page 2+ — Detailed table
+  doc.addPage();
+  doc.setFont('helvetica','bold');
+  doc.setFontSize(16);
+  doc.setTextColor(...inkColor);
+  doc.text('DETAILED COMPARISON', margin, 50);
+  doc.setDrawColor(...inkColor);
+  doc.setLineWidth(1.2);
+  doc.line(margin, 58, pageW-margin, 58);
+
+  const head = [['Date','Vehicle','My Wt','Co. Wt','Wt Diff','My Rate','Co. Rate','Rate Diff','My Amt','Co. Amt','Amt Diff','Status']];
+  const statusText = {ok:'Same', bad:'Difference', missing:'Missing', extra:'Extra', manual:'Verify'};
+  const body = lastResult.rows.map(r=>[
+    r.date, r.vehicleText,
+    fmtT(r.myWeight), fmtT(r.coWeight), r.wtDiff==null?'—':(r.wtDiff>0.02? r.wtDiff.toFixed(2)+' T':'0'),
+    fmtRate(r.myRate), fmtRate(r.coRate), r.rtDiff==null?'—':(r.rtDiff>1? '₹'+r.rtDiff.toFixed(0)+'/T':'₹0'),
+    fmtAmt(r.myAmt), fmtAmt(r.coAmt), r.amtDiff==null?'—':(r.amtDiff>5? '₹'+Math.round(r.amtDiff).toLocaleString('en-IN'):'₹0'),
+    statusText[r.status] || r.status
+  ]);
+
+  doc.autoTable({
+    startY: 70,
+    margin:{left:margin, right:margin},
+    head, body,
+    theme:'grid',
+    headStyles:{fillColor:dieselColor, textColor:255, fontSize:8, fontStyle:'bold'},
+    bodyStyles:{fontSize:8, textColor:inkColor},
+    alternateRowStyles:{fillColor:[246,244,236]},
+    didParseCell:(data)=>{
+      if(data.section==='body' && data.column.index===11){
+        const s = data.cell.raw;
+        if(s==='Difference') data.cell.styles.textColor = rustColor;
+        if(s==='Missing' || s==='Verify') data.cell.styles.textColor = [155,103,14];
+        if(s==='Extra') data.cell.styles.textColor = [74,111,165];
+        if(s==='Same') data.cell.styles.textColor = dieselColor;
+        data.cell.styles.fontStyle='bold';
+      }
+    }
+  });
+
+  doc.save(`Transport_Comparison_${dateStamp()}.pdf`);
+});
+
+function dateStamp(){
+  const d = new Date();
+  return `${d.getFullYear()}${String(d.getMonth()+1).padStart(2,'0')}${String(d.getDate()).padStart(2,'0')}`;
+}
+
+/* ============================================================
+   EXCEL REPORT
+   ============================================================ */
+document.getElementById('btnXlsx').addEventListener('click', ()=>{
+  if(!lastResult) return;
+  const wb = XLSX.utils.book_new();
+
+  const summaryData = [
+    ['TRANSPORT LOG COMPARISON REPORT'],
+    [],
+    ['My Log', lastResult.fileAName],
+    ['Company Log', lastResult.fileBName],
+    ['Generated', new Date().toLocaleString('en-IN')],
+    [],
+    ['Metric','Value'],
+    ['Total loads in My Log', lastResult.totalA],
+    ['Total loads in Company Log', lastResult.totalB],
+    ['Matched loads (Same)', lastResult.matchedCount],
+    ['Missing in Company Log', lastResult.missingCount],
+    ['Extra in Company Log', lastResult.extraCount],
+    ['Needs Manual Verification', lastResult.manualCount],
+    ['Weight Differences', lastResult.weightDiffs],
+    ['Rate Differences', lastResult.rateDiffs],
+    ['Amount Differences', lastResult.amountDiffs],
+  ];
+  const wsSummary = XLSX.utils.aoa_to_sheet(summaryData);
+  wsSummary['!cols'] = [{wch:32},{wch:34}];
+  XLSX.utils.book_append_sheet(wb, wsSummary, 'Summary');
+
+  const statusText = {ok:'Same', bad:'Difference', missing:'Missing in Company', extra:'Extra in Company', manual:'Needs Verification'};
+  const detailHead = ['Date','Vehicle','My Weight (T)','Company Weight (T)','Weight Diff (T)','My Rate (₹/T)','Company Rate (₹/T)','Rate Diff (₹/T)','My Amount (₹)','Company Amount (₹)','Amount Diff (₹)','Status'];
+  const detailRows = lastResult.rows.map(r=>[
+    r.date, r.vehicleText,
+    r.myWeight==null?'':r.myWeight.toFixed(2),
+    r.coWeight==null?'':r.coWeight.toFixed(2),
+    r.wtDiff==null?'':r.wtDiff.toFixed(2),
+    r.myRate==null?'':Math.round(r.myRate),
+    r.coRate==null?'':Math.round(r.coRate),
+    r.rtDiff==null?'':Math.round(r.rtDiff),
+    r.myAmt==null?'':Math.round(r.myAmt),
+    r.coAmt==null?'':Math.round(r.coAmt),
+    r.amtDiff==null?'':Math.round(r.amtDiff),
+    statusText[r.status] || r.status
+  ]);
+  const wsDetail = XLSX.utils.aoa_to_sheet([detailHead, ...detailRows]);
+  wsDetail['!cols'] = [{wch:12},{wch:14},{wch:14},{wch:16},{wch:14},{wch:14},{wch:16},{wch:14},{wch:14},{wch:16},{wch:14},{wch:20}];
+  XLSX.utils.book_append_sheet(wb, wsDetail, 'Detailed Comparison');
+
+  XLSX.writeFile(wb, `Transport_Comparison_${dateStamp()}.xlsx`);
+});
+</script>
+</body>
+</html>
