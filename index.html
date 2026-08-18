@@ -741,6 +741,30 @@ function parseRecords(lines, type = 'my'){
     return removeDuplicateRecords(records);
 }
 
+
+function removeDuplicateRecords(records){   
+
+    const unique = new Map();
+
+    records.forEach(record => {
+
+        const date = record.date?.iso || '';
+
+        const vehicle = record.vehicle || '';
+
+        const weight = record.weight
+            ? record.weight.value + record.weight.unit
+            : '';
+
+        const key = `${date}|${vehicle}|${weight}`;
+
+        if(!unique.has(key)){
+            unique.set(key, record);
+        }
+    });
+
+    return [...unique.values()];
+}
   // Fallback: multi-line accumulation mode
   lines.forEach(line=>{
     const d = parseDate(line);
@@ -777,12 +801,22 @@ function parseRecords(lines, type = 'my'){
    NORMALIZATION
    ============================================================ */
 function normWeightT(w){
-  if(!w) return null;
-  return w.unit === 'KG' ? w.value/1000 : w.value;
+
+    if(!w) return null;
+
+    return w.unit === 'KG'
+        ? w.value / 1000
+        : w.value;
 }
+
+
 function normRatePerT(r){
-  if(!r) return null;
-  return r.unit === 'KG' ? r.value*1000 : r.value;
+
+    if(!r) return null;
+
+    return r.unit === 'KG'
+        ? r.value * 1000
+        : r.value;
 }
 
 /* ============================================================
@@ -790,62 +824,169 @@ function normRatePerT(r){
    Match records from log A to log B using: date -> vehicle tail -> weight proximity -> invoice
    ============================================================ */
 function matchRecords(listA, listB){
-  const usedB = new Set();
-  const matched = [];
-  const missing = []; // in A, not in B
-  const extra = [];   // in B, not in A
 
-  function score(a,b){
-    let s = 0;
-    if(a.date && b.date && a.date.iso === b.date.iso) s += 40;
-    else if(a.date && b.date) return -1; // date mismatch disqualifies unless one is missing
+    const usedB = new Set();
 
-    if(a.vehicle && b.vehicle){
-      const digitsA = a.vehicle.replace(/\D/g,''), digitsB = b.vehicle.replace(/\D/g,'');
-      const tailLen = Math.min(digitsA.length, digitsB.length, 4);
-      const ta = vehicleTail(a.vehicle, tailLen), tb = vehicleTail(b.vehicle, tailLen);
-      if(a.vehicle === b.vehicle) s += 35;
-      else if(tailLen >= 3 && ta && tb && ta === tb) s += 30;
-      else return -1;
-    }
-    const wa = normWeightT(a.weight), wb = normWeightT(b.weight);
-    if(wa!=null && wb!=null){
-      const diff = Math.abs(wa-wb);
-      if(diff < 0.02) s += 20;
-      else if(diff < 0.3) s += 10;
-      else s -= 5; // still allow but lower score — could be genuine diff
-    }
-    if(a.invoice && b.invoice){
-      if(a.invoice.toLowerCase() === b.invoice.toLowerCase()) s += 15;
-    }
-    return s;
-  }
+    const matched = [];
+    const missing = [];
+    const extra = [];
 
-  listA.forEach(a=>{
-    let bestIdx = -1, bestScore = -1;
-    listB.forEach((b,i)=>{
-      if(usedB.has(i)) return;
-      const s = score(a,b);
-      if(s > bestScore){ bestScore = s; bestIdx = i; }
+
+    function score(a, b){
+
+        let score = 0;
+
+
+        // =============================
+        // DATE
+        // =============================
+
+        if(a.date && b.date){
+
+            if(a.date.iso === b.date.iso){
+                score += 50;
+            }else{
+                return -1;
+            }
+        }
+
+
+        // =============================
+        // VEHICLE
+        // =============================
+
+        if(a.vehicle && b.vehicle){
+
+            const digitsA =
+                a.vehicle.replace(/\D/g, '');
+
+            const digitsB =
+                b.vehicle.replace(/\D/g, '');
+
+            // Last 4 digits
+            const tailA = digitsA.slice(-4);
+            const tailB = digitsB.slice(-4);
+
+            if(a.vehicle === b.vehicle){
+                score += 40;
+            }
+            else if(
+                tailA.length === 4 &&
+                tailB.length === 4 &&
+                tailA === tailB
+            ){
+                score += 40;
+            }
+            else{
+                return -1;
+            }
+        }
+
+
+        // =============================
+        // WEIGHT
+        // =============================
+
+        const weightA = normWeightT(a.weight);
+        const weightB = normWeightT(b.weight);
+
+        if(weightA != null && weightB != null){
+
+            const difference =
+                Math.abs(weightA - weightB);
+
+            // Example:
+            // 10.72 T = 10720 KG
+
+            if(difference <= 0.02){
+                score += 30;
+            }
+            else if(difference <= 0.30){
+                score += 10;
+            }
+        }
+
+
+        // =============================
+        // INVOICE
+        // =============================
+
+        if(a.invoice && b.invoice){
+
+            if(
+                a.invoice.toLowerCase() ===
+                b.invoice.toLowerCase()
+            ){
+                score += 20;
+            }
+        }
+
+        return score;
+    }
+
+
+    listA.forEach(a => {
+
+        let bestIndex = -1;
+        let bestScore = -1;
+
+        listB.forEach((b, index) => {
+
+            if(usedB.has(index)){
+                return;
+            }
+
+            const currentScore = score(a, b);
+
+            if(currentScore > bestScore){
+
+                bestScore = currentScore;
+                bestIndex = index;
+            }
+        });
+
+
+        if(bestIndex >= 0 && bestScore >= 60){
+
+            usedB.add(bestIndex);
+
+            matched.push({
+                a,
+                b: listB[bestIndex],
+                confidence: 'high'
+            });
+
+        }else if(bestIndex >= 0 && bestScore >= 40){
+
+            usedB.add(bestIndex);
+
+            matched.push({
+                a,
+                b: listB[bestIndex],
+                confidence: 'manual'
+            });
+
+        }else{
+
+            missing.push(a);
+        }
     });
-    if(bestIdx >= 0 && bestScore >= 40){
-      usedB.add(bestIdx);
-      matched.push({a, b: listB[bestIdx], confidence: bestScore >= 60 ? 'high' : 'low'});
-    } else if(bestIdx >= 0 && bestScore >= 15){
-      // weak candidate — needs manual verification, still pair them
-      usedB.add(bestIdx);
-      matched.push({a, b: listB[bestIdx], confidence: 'manual'});
-    } else {
-      missing.push(a);
-    }
-  });
-  listB.forEach((b,i)=>{
-    if(!usedB.has(i)) extra.push(b);
-  });
 
-  return {matched, missing, extra};
+
+    listB.forEach((b, index) => {
+
+        if(!usedB.has(index)){
+            extra.push(b);
+        }
+    });
+
+
+    return {
+        matched,
+        missing,
+        extra
+    };
 }
-
 /* ============================================================
    VEHICLE DISPLAY — always show the full-format plate, and if
    the two logs used different formats for the same vehicle
@@ -944,8 +1085,9 @@ document.getElementById('btnCompare').addEventListener('click', async ()=>{
     const textB = await extractPdfText(fileBData);
     setProgress(55, 'Parsing records…');
 
-    const recA = parseRecords(textA.lines);
-    const recB = parseRecords(textB.lines);
+    const recA = parseRecords(textA.lines, 'my');
+
+const recB = parseRecords(textB.lines, 'company');  
 
     if(recA.length === 0 || recB.length === 0){
       throw new Error('Could not find any load records in one of the PDFs. Please check the file content.');
