@@ -346,7 +346,7 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs
 /* ============================================================
    STATE
    ============================================================ */
-let fileAData = null, fileBData = null;
+let fileAFile = null, fileBFile = null;
 let fileAName = '', fileBName = '';
 let lastResult = null;
 
@@ -372,11 +372,11 @@ function setupDropzone(inputId, dzId, subId, onLoaded){
   dz.addEventListener('drop', e=>{
     e.preventDefault();
     const f = e.dataTransfer.files[0];
-    if(f && f.type === 'application/pdf'){ handleFile(f); }
+    if(f && (f.type === 'application/pdf' || /\.pdf$/i.test(f.name))){ handleFile(f); }
   });
 
   function handleFile(f){
-    if(f.type !== 'application/pdf'){
+    if(!(f.type === 'application/pdf' || /\.pdf$/i.test(f.name))){
       showError('Please upload a PDF file.');
       return;
     }
@@ -388,23 +388,21 @@ function setupDropzone(inputId, dzId, subId, onLoaded){
 
 setupDropzone('fileA','dzA','dzA-sub', f=>{
   fileAName = f.name;
+  fileAFile = f;
   document.getElementById('cardA').classList.add('filled');
   document.getElementById('tickA').textContent = '✓';
-  const reader = new FileReader();
-  reader.onload = e => { fileAData = new Uint8Array(e.target.result); checkReady(); };
-  reader.readAsArrayBuffer(f);
+  checkReady();
 });
 setupDropzone('fileB','dzB','dzB-sub', f=>{
   fileBName = f.name;
+  fileBFile = f;
   document.getElementById('cardB').classList.add('filled');
   document.getElementById('tickB').textContent = '✓';
-  const reader = new FileReader();
-  reader.onload = e => { fileBData = new Uint8Array(e.target.result); checkReady(); };
-  reader.readAsArrayBuffer(f);
+  checkReady();
 });
 
 function checkReady(){
-  document.getElementById('btnCompare').disabled = !(fileAData && fileBData);
+  document.getElementById('btnCompare').disabled = !(fileAFile && fileBFile);
 }
 
 function showError(msg){
@@ -417,9 +415,24 @@ function showError(msg){
 /* ============================================================
    PDF TEXT EXTRACTION
    ============================================================ */
-async function extractPdfText(data){
+async function extractPdfText(file){
 
-    const pdf = await pdfjsLib.getDocument({ data }).promise;
+    if(!(file instanceof Blob)){
+        throw new Error('PDF file is not available. Please select the PDF again.');
+    }
+
+    // IMPORTANT:
+    // We create a NEW ArrayBuffer every time we compare.
+    // PDF.js transfers the Uint8Array buffer to its worker, so we must
+    // never reuse the same ArrayBuffer for another PDF operation.
+    const buffer = await file.arrayBuffer();
+    const data = new Uint8Array(buffer);
+
+    const loadingTask = pdfjsLib.getDocument({
+        data: data
+    });
+
+    const pdf = await loadingTask.promise;
 
     let fullText = '';
     const lineRecords = [];
@@ -497,11 +510,14 @@ async function extractPdfText(data){
         });
     }
 
-    return {
+    const result = {
         fullText,
         lines: lineRecords,
         rows: allRows
     };
+
+    await pdf.destroy();
+    return result;
 }
 /* ============================================================
    PARSING LOGIC
@@ -514,26 +530,57 @@ const MONTHS = {jan:1,feb:2,mar:3,apr:4,may:5,jun:6,jul:7,aug:8,sep:9,sept:9,oct
 
 function parseDate(str){
   // Try DD-Mon-YYYY / DD Mon YYYY / DD/MM/YYYY / DD-MM-YYYY / YYYY-MM-DD
-  str = str.trim();
+  str = String(str || '').trim();
   let m;
+
   if((m = str.match(/(\d{1,2})[-\/\s]([A-Za-z]{3,9})[-\/\s](\d{2,4})/))){
-    const mon = MONTHS[m[2].toLowerCase().slice(0,3) === 'sep' && m[2].toLowerCase().startsWith('sept') ? 'sept' : m[2].toLowerCase().slice(0,3)];
+    const key = m[2].toLowerCase().slice(0,3);
+    const mon = MONTHS[key];
     if(mon){
-      let yr = parseInt(m[3]);
+      let yr = parseInt(m[3], 10);
       if(yr < 100) yr += 2000;
-      return normDate(parseInt(m[1]), mon, yr);
+      if(yr >= 2020 && yr <= 2035){
+        return normDate(parseInt(m[1],10), mon, yr);
+      }
     }
   }
+
   if((m = str.match(/(\d{4})-(\d{1,2})-(\d{1,2})/))){
-    return normDate(parseInt(m[3]), parseInt(m[2]), parseInt(m[1]));
+    const yr = parseInt(m[1],10);
+    if(yr >= 2020 && yr <= 2035){
+      return normDate(parseInt(m[3],10), parseInt(m[2],10), yr);
+    }
   }
+
   if((m = str.match(/(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})/))){
-    let yr = parseInt(m[3]); if(yr<100) yr+=2000;
-    // assume DD/MM/YYYY (Indian convention)
-    return normDate(parseInt(m[1]), parseInt(m[2]), yr);
+    let yr = parseInt(m[3],10);
+    if(yr < 100) yr += 2000;
+    if(yr >= 2020 && yr <= 2035){
+      return normDate(parseInt(m[1],10), parseInt(m[2],10), yr);
+    }
   }
+
   return null;
 }
+
+function parseDateWithDefaultYear(str, defaultYear = 2026){
+  const normal = parseDate(str);
+  if(normal) return normal;
+
+  // Some My Log PDF rows split "2026" into another PDF text item.
+  // Example reconstructed line: "03 Aug 9046 ..."
+  // Here 9046 is the vehicle, not the year.
+  const m = String(str || '').match(/\b(\d{1,2})[-\s]([A-Za-z]{3,9})\b/);
+  if(m){
+    const mon = MONTHS[m[2].toLowerCase().slice(0,3)];
+    if(mon){
+      return normDate(parseInt(m[1],10), mon, defaultYear);
+    }
+  }
+
+  return null;
+}
+
 function normDate(d,m,y){
   if(!d||!m||!y||m<1||m>12||d<1||d>31) return null;
   const dd = String(d).padStart(2,'0');
@@ -645,102 +692,191 @@ function extractInvoice(line){
  * one load's fields across a table row split into multiple text lines,
  * or condense a whole load onto a single line.
  */
-function parseRecords(lines, type = 'my'){
 
-    const records = [];
+/* ============================================================
+   ROW-AWARE PDF PARSING
+   The Company PDF is a real positioned table. Therefore we use
+   PDF cell X coordinates instead of guessing from arbitrary lines.
+   ============================================================ */
 
-    /*
-    =====================================================
-    COMPANY PDF PARSER
-    =====================================================
-    */
+function cellText(row, minX, maxX){
+  return row.cells
+    .filter(c => c.x >= minX && c.x < maxX)
+    .sort((a,b) => a.x - b.x)
+    .map(c => c.text)
+    .join(' ')
+    .trim();
+}
 
-    if(type === 'company'){
+function numberFromText(text){
+  if(!text) return null;
+  const m = text.match(/-?\d[\d,]*(?:\.\d+)?/);
+  return m ? parseFloat(m[0].replace(/,/g,'')) : null;
+}
 
-        for(let i = 0; i < lines.length; i++){
+function parseCompanyRows(rows){
+  const records = [];
 
-            const line = lines[i];
+  rows.forEach(row => {
+    const dateText = cellText(row, 195, 255);
+    const date = parseDate(dateText || row.line);
+    if(!date) return;
 
-            // Try to identify Company record
-            const companyData = parseCompanyRow(line);
+    // The actual Company PDF columns:
+    // DATE        x ≈ 205
+    // NET (KGS)   x ≈ 313-355
+    // NET RATE    x ≈ 380
+    // NET PAYABLE x ≈ 570-635
+    // VEHICLE     x ≈ 630+
+    const weightValue = numberFromText(cellText(row, 305, 357));
+    const rateValue = numberFromText(cellText(row, 370, 425));
+    const amountValue = numberFromText(cellText(row, 565, 640));
 
-            if(companyData){
+    const vehicleText = cellText(row, 630, 760) || row.line;
+    const vehicle = extractVehicle(vehicleText);
 
-                const date = parseDate(line) ||
-                             findDateInPreviousLines(lines, i);
-
-                if(date){
-
-                    records.push({
-                        date: date,
-                        vehicle: companyData.vehicle,
-                        weight: companyData.weight,
-                        rate: companyData.rate,
-                        amount: companyData.amount,
-                        invoice: extractInvoice(line),
-                        rawLines: [line]
-                    });
-                }
-            }
-        }
-
-        return removeDuplicateRecords(records);
+    if(
+      !vehicle ||
+      weightValue == null ||
+      weightValue < 500 ||
+      weightValue > 50000
+    ){
+      return;
     }
 
+    records.push({
+      date,
+      vehicle,
+      weight: {
+        value: weightValue,
+        unit: 'KG',
+        raw: weightValue + ' KG'
+      },
+      rate: (
+        rateValue != null &&
+        rateValue > 0 &&
+        rateValue < 100
+      ) ? {
+        value: rateValue,
+        unit: 'KG',
+        raw: rateValue + ' /KG'
+      } : null,
+      amount: amountValue,
+      invoice: cellText(row, 140, 200) || null,
+      rawLines: [row.line]
+    });
+  });
 
-    /*
-    =====================================================
-    MY LOG PARSER
-    =====================================================
-    */
+  return removeDuplicateRecords(records);
+}
 
+function parseMyRow(row){
+  const line = row.line;
+
+  const date = parseDateWithDefaultYear(line, 2026);
+  const vehicle = extractVehicle(line);
+  const weight = extractWeight(line);
+
+  if(!date || !vehicle || !weight){
+    return null;
+  }
+
+  let rate = extractRate(line);
+  let amount = extractAmount(line);
+
+  // My Log PDF normally has:
+  // ... 10.72 T 2,300.00 24,656.00
+  // The rate/amount are not explicitly labelled, so read values
+  // appearing after the weight.
+  const weightMatch = line.match(/(\d[\d,]*\.?\d*)\s*T(?:ON)?S?\b/i);
+
+  if(weightMatch){
+    const tail = line.slice(
+      weightMatch.index + weightMatch[0].length
+    );
+
+    const nums = [
+      ...tail.matchAll(/\d[\d,]*(?:\.\d+)?/g)
+    ].map(m => parseFloat(m[0].replace(/,/g,'')))
+     .filter(n => Number.isFinite(n));
+
+    if(!rate && nums.length >= 1){
+      rate = {
+        value: nums[0],
+        unit: 'T',
+        raw: nums[0] + ' /T'
+      };
+    }
+
+    if(amount == null && nums.length >= 2){
+      amount = nums[1];
+    }
+  }
+
+  return {
+    date,
+    vehicle,
+    weight,
+    rate,
+    amount,
+    invoice: extractInvoice(line),
+    rawLines: [line]
+  };
+}
+
+function parseRecords(source, type = 'my'){
+
+  const rows = Array.isArray(source)
+    ? source
+    : [];
+
+  // New row-aware path.
+  if(rows.length && rows[0] && rows[0].cells){
+    if(type === 'company'){
+      return parseCompanyRows(rows);
+    }
+
+    return removeDuplicateRecords(
+      rows
+        .map(parseMyRow)
+        .filter(Boolean)
+    );
+  }
+
+  // Fallback path if only plain text lines are supplied.
+  const lines = Array.isArray(source) ? source : [];
+  const records = [];
+
+  if(type === 'company'){
     lines.forEach(line => {
+      const companyData = parseCompanyRow(line);
+      if(!companyData) return;
 
-        const date = parseDate(line);
-        const vehicle = extractVehicle(line);
-        const weight = extractWeight(line);
+      const date = parseDate(line);
+      if(!date) return;
 
-        // A valid My Log record requires:
-        // Date + Vehicle + Weight
-
-        if(date && vehicle && weight){
-
-            const rate = extractRate(line);
-
-            let amount = extractAmount(line);
-
-            // Currency fallback
-            if(amount == null){
-
-                const allCurrency =
-                    [...line.matchAll(
-                        /(?:₹|Rs\.?|INR)\s*(\d[\d,]*\.?\d{0,2})/gi
-                    )];
-
-                if(allCurrency.length){
-
-                    amount = parseFloat(
-                        allCurrency[allCurrency.length - 1][1]
-                            .replace(/,/g, '')
-                    );
-                }
-            }
-
-            records.push({
-                date,
-                vehicle,
-                weight,
-                rate,
-                amount,
-                invoice: extractInvoice(line),
-                rawLines: [line]
-            });
-        }
+      records.push({
+        date,
+        vehicle: companyData.vehicle,
+        weight: companyData.weight,
+        rate: companyData.rate,
+        amount: companyData.amount,
+        invoice: extractInvoice(line),
+        rawLines: [line]
+      });
     });
 
     return removeDuplicateRecords(records);
-}
+  }
 
+  lines.forEach(line => {
+    const fakeRow = { line, cells: [] };
+    const record = parseMyRow(fakeRow);
+    if(record) records.push(record);
+  });
+
+  return removeDuplicateRecords(records);
+}
 
 function removeDuplicateRecords(records){   
 
@@ -764,37 +900,6 @@ function removeDuplicateRecords(records){
     });
 
     return [...unique.values()];
-}
-  // Fallback: multi-line accumulation mode
-  lines.forEach(line=>{
-    const d = parseDate(line);
-    const v = extractVehicle(line);
-    const w = extractWeight(line);
-    const r = extractRate(line);
-    const a = extractAmount(line);
-    const inv = extractInvoice(line);
-
-    const startsNew = d && buffer.date && d.iso !== buffer.date.iso;
-    const vehicleConflict = v && buffer.vehicle && v !== buffer.vehicle && buffer.weight;
-
-    if(startsNew || vehicleConflict){
-      flush();
-    }
-    if(d && !buffer.date) buffer.date = d;
-    if(v && !buffer.vehicle) buffer.vehicle = v;
-    if(w && !buffer.weight) buffer.weight = w;
-    if(r && !buffer.rate) buffer.rate = r;
-    if(a && !buffer.amount) buffer.amount = a;
-    if(inv && !buffer.invoice) buffer.invoice = inv;
-    buffer.rawLines.push(line);
-
-    // if a record looks complete (date+vehicle+weight+rate), flush eagerly
-    if(buffer.date && buffer.vehicle && buffer.weight && buffer.rate){
-      flush();
-    }
-  });
-  flush();
-  return records.filter(r=>r.date || r.vehicle || r.weight);
 }
 
 /* ============================================================
@@ -1080,14 +1185,17 @@ document.getElementById('btnCompare').addEventListener('click', async ()=>{
   setProgress(5, 'Reading My Log PDF…');
 
   try{
-    const textA = await extractPdfText(fileAData);
+    const textA = await extractPdfText(fileAFile);
     setProgress(30, 'Reading Company Log PDF…');
-    const textB = await extractPdfText(fileBData);
+    const textB = await extractPdfText(fileBFile);
     setProgress(55, 'Parsing records…');
 
-    const recA = parseRecords(textA.lines, 'my');
+    const recA = parseRecords(textA.rows, 'my');
 
-const recB = parseRecords(textB.lines, 'company');  
+const recB = parseRecords(textB.rows, 'company');
+
+    console.log('My Log records:', recA.length, recA);
+    console.log('Company records:', recB.length, recB);  
 
     if(recA.length === 0 || recB.length === 0){
       throw new Error('Could not find any load records in one of the PDFs. Please check the file content.');
@@ -1357,109 +1465,7 @@ document.getElementById('btnXlsx').addEventListener('click', ()=>{
 
   XLSX.writeFile(wb, `Transport_Comparison_${dateStamp()}.xlsx`);
 });
-  function parseCompanyRow(line){
 
-    const vehicle = extractVehicle(line);
-
-    if(!vehicle){
-        return null;
-    }
-
-    // Find all numbers
-    const numbers = line.match(/\b\d+(?:\.\d+)?\b/g);
-
-    if(!numbers || numbers.length < 3){
-        return null;
-    }
-
-    let weight = null;
-    let rate = null;
-    let amount = null;
-
-    /*
-      Find possible weight.
-
-      Company weight examples:
-
-      10720
-      11400
-      11100
-      13160
-
-      Usually between 1,000 KG and 50,000 KG.
-    */
-
-    for(let i = 0; i < numbers.length; i++){
-
-        const value = parseFloat(numbers[i]);
-
-        if(value >= 1000 && value <= 50000){
-
-            weight = {
-                value: value,
-                unit: 'KG',
-                raw: value + ' KG'
-            };
-
-            // Usually next small decimal number is rate
-            if(i + 1 < numbers.length){
-
-                const possibleRate = parseFloat(numbers[i + 1]);
-
-                if(possibleRate > 0 && possibleRate < 100){
-
-                    rate = {
-                        value: possibleRate,
-                        unit: 'KG',
-                        raw: possibleRate + ' /KG'
-                    };
-                }
-            }
-
-            // Find amount after weight
-            for(let j = i + 1; j < numbers.length; j++){
-
-                const possibleAmount = parseFloat(numbers[j]);
-
-                if(possibleAmount >= 1000){
-
-                    // Don't use weight itself
-                    if(possibleAmount !== value){
-
-                        amount = possibleAmount;
-                    }
-                }
-            }
-
-            break;
-        }
-    }
-
-    if(!weight){
-        return null;
-    }
-
-    return {
-        vehicle,
-        weight,
-        rate,
-        amount
-    };
-}
-  function findDateInPreviousLines(lines, index){
-
-    // Search previous few lines for the nearest date
-    for(let i = index; i >= Math.max(0, index - 8); i--){
-
-        const date = parseDate(lines[i]);
-
-        if(date){
-            return date;
-        }
-    }
-
-    return null;
-}
 </script>
 </body>
 </html>
